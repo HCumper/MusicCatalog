@@ -1,0 +1,88 @@
+<template id="MusicCatalog">
+  <div class="catalog-page">
+    <header class="catalog-header">
+      <h1 class="title">Music Catalog</h1>
+      <div class="catalog-session">
+        <span>Signed in as ${Username}</span>
+        <button class="button is-light" onclick="${SignOut}">Sign out</button>
+      </div>
+    </header>
+
+    <section class="catalog-search">
+      <div class="field">
+        <label class="label">Title</label>
+        <div class="control">
+          <div class="select is-fullwidth">
+            <select bind="${Title}">
+              ${TitleOptions}
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <div class="field">
+        <label class="label">Artist</label>
+        <div class="control">
+          <div class="select is-fullwidth">
+            <select bind="${Artist}">
+              ${ArtistOptions}
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <div class="field">
+        <label class="label">Genre</label>
+        <div class="control">
+          <div class="select is-fullwidth">
+            <select bind="${Genre}">
+              ${GenreOptions}
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <div class="field">
+        <label class="label">Codec</label>
+        <div class="control">
+          <div class="select is-fullwidth">
+            <select bind="${Codec}">
+              ${CodecOptions}
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <div class="field catalog-actions">
+        <label class="label">&nbsp;</label>
+        <div class="buttons">
+          <button class="button is-primary" onclick="${Search}">Search</button>
+          <button class="button" onclick="${Reload}">Reload Source</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="catalog-grid">
+      <table class="table is-fullwidth is-striped is-hoverable">
+        <thead>
+          <tr>
+            <th>Title</th>
+            <th>Artist</th>
+            <th>Album</th>
+            <th>Track</th>
+            <th>Year</th>
+            <th>Genre</th>
+            <th>Codec</th>
+            <th>Filename</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${Rows}
+          <template id="EmptyData">
+            <tr><td colspan="8">No rows to display.</td></tr>
+          </template>
+        </tbody>
+      </table>
+    </section>
+  </div>
+</template>

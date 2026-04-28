@@ -19,6 +19,13 @@ type Model =
     { page: Page
       counter: int
       recordings: Recording[] option
+      titleFilter: string
+      artistFilter: string
+      genreFilter: string
+      codecFilter: string
+      genreOptions: string[]
+      codecOptions: string[]
+      menuCollapsed: bool
       error: string option
       username: string
       password: string
@@ -32,12 +39,46 @@ and Recording =
       track: string
       year: string
       genre: string
+      codec: string
       filename: string }
+
+let sampleRecordings =
+    [| { title = "- 2. Galop. Presto"
+         artist = "Kathryn Stott - BBC Philharmonic"
+         album = "Kabalevsky: Piano Concertos Nos. 2 & 3"
+         track = "06/17"
+         year = "2003"
+         genre = "Classical"
+         codec = "MP3"
+         filename = "- 2. Galop. Presto.mp3" }
+       { title = "Decomposing Composers"
+         artist = "Monty Python"
+         album = "The Final Rip Off"
+         track = "20"
+         year = "1988"
+         genre = "Comedy"
+         codec = "WMA"
+         filename = "Decomposing Composers Monty Python 20.wma" }
+       { title = "Great Composers Love Folk Songs Too"
+         artist = "Various Artists"
+         album = "Classical Folk"
+         track = "03"
+         year = "1997"
+         genre = "Classical"
+         codec = "FLAC"
+         filename = "Great Composers Love Folk Songs Too.flac" } |]
 
 let initModel =
     { page = Home
       counter = 0
       recordings = None
+      titleFilter = ""
+      artistFilter = ""
+      genreFilter = ""
+      codecFilter = ""
+      genreOptions = Array.empty
+      codecOptions = Array.empty
+      menuCollapsed = false
       error = None
       username = ""
       password = ""
@@ -52,6 +93,15 @@ type RecordingService =
 
         /// Add a recording in the collection.
         addRecording: Recording -> Async<unit>
+
+        /// Get the configured codec search options.
+        getCodecOptions: unit -> Async<string[]>
+
+        /// Get distinct genres from the music catalog.
+        getGenreOptions: unit -> Async<string[]>
+
+        /// Search music catalog rows by selected criteria.
+        searchRecordings: string * string * string * string -> Async<Recording[]>
 
         /// Sign into the application.
         signIn: string * string -> Async<option<string>>
@@ -74,6 +124,16 @@ type Message =
     | SetCounter of int
     | GetRecordings
     | GotRecordings of Recording[]
+    | SetTitleFilter of string
+    | SetArtistFilter of string
+    | SetGenreFilter of string
+    | SetCodecFilter of string
+    | GetCodecOptions
+    | RecvCodecOptions of string[]
+    | GetGenreOptions
+    | RecvGenreOptions of string[]
+    | SearchCatalog
+    | ToggleMenu
     | SetUsername of string
     | SetPassword of string
     | ClearLoginForm
@@ -108,7 +168,42 @@ let update remote message model =
     | GetRecordings ->
         let cmd = Cmd.OfAsync.either remote.getRecordings () GotRecordings Error
         { model with recordings = None }, cmd
-    | GotRecordings recordings -> { model with recordings = Some recordings }, Cmd.none
+    | GotRecordings recordings ->
+        { model with recordings = Some recordings }, Cmd.ofMsg GetGenreOptions
+
+    | SetTitleFilter value -> { model with titleFilter = value }, Cmd.none
+    | SetArtistFilter value -> { model with artistFilter = value }, Cmd.none
+    | SetGenreFilter value -> { model with genreFilter = value }, Cmd.none
+    | SetCodecFilter value -> { model with codecFilter = value }, Cmd.none
+    | GetCodecOptions ->
+        model,
+        Cmd.OfAsync.either remote.getCodecOptions () RecvCodecOptions Error
+    | RecvCodecOptions codecs ->
+        { model with codecOptions = codecs }, Cmd.none
+    | GetGenreOptions ->
+        model,
+        Cmd.OfAsync.either remote.getGenreOptions () RecvGenreOptions Error
+    | RecvGenreOptions genres ->
+        let selectedGenre =
+            if Array.contains model.genreFilter genres then
+                model.genreFilter
+            else
+                ""
+
+        { model with
+            genreOptions = genres
+            genreFilter = selectedGenre },
+        Cmd.none
+    | SearchCatalog ->
+        let criteria =
+            model.titleFilter,
+            model.artistFilter,
+            model.genreFilter,
+            model.codecFilter
+
+        { model with recordings = None },
+        Cmd.OfAsync.either remote.searchRecordings criteria GotRecordings Error
+    | ToggleMenu -> { model with menuCollapsed = not model.menuCollapsed }, Cmd.none
 
     | SetUsername s -> { model with username = s }, Cmd.none
     | SetPassword s -> { model with password = s }, Cmd.none
@@ -155,6 +250,7 @@ let update remote message model =
 let router = Router.infer SetPage (fun model -> model.page)
 
 type Main = Template<"wwwroot/main.html">
+type MusicCatalog = Template<"wwwroot/music-catalog.html">
 
 let homePage model dispatch = Main.Home().Elt()
 
@@ -166,16 +262,47 @@ let counterPage model dispatch =
         .Value(model.counter, fun v -> dispatch (SetCounter v))
         .Elt()
 
+let optionList selected values =
+    concat {
+        option {
+            attr.value ""
+            attr.selected (String.IsNullOrWhiteSpace selected)
+            "All"
+        }
+
+        for value in values do
+            option {
+                attr.value value
+                attr.selected (selected = value)
+                value
+            }
+    }
+
+let distinctValues selector =
+    sampleRecordings
+    |> Array.map selector
+    |> Array.distinct
+    |> Array.sort
+
 let dataPage model (username: string) dispatch =
-    Main
-        .Data()
+    MusicCatalog
+        .MusicCatalog()
         .Reload(fun _ -> dispatch GetRecordings)
+        .Search(fun _ -> dispatch SearchCatalog)
         .Username(username)
         .SignOut(fun _ -> dispatch SendSignOut)
+        .Title(model.titleFilter, fun value -> dispatch (SetTitleFilter value))
+        .Artist(model.artistFilter, fun value -> dispatch (SetArtistFilter value))
+        .Genre(model.genreFilter, fun value -> dispatch (SetGenreFilter value))
+        .Codec(model.codecFilter, fun value -> dispatch (SetCodecFilter value))
+        .TitleOptions(optionList model.titleFilter (distinctValues (fun recording -> recording.title)))
+        .ArtistOptions(optionList model.artistFilter (distinctValues (fun recording -> recording.artist)))
+        .GenreOptions(optionList model.genreFilter model.genreOptions)
+        .CodecOptions(optionList model.codecFilter model.codecOptions)
         .Rows(
             cond model.recordings
             <| function
-                | None -> Main.EmptyData().Elt()
+                | None -> MusicCatalog.EmptyData().Elt()
                 | Some recordings ->
                     forEach recordings
                     <| fun recording ->
@@ -186,6 +313,7 @@ let dataPage model (username: string) dispatch =
                             td { recording.track }
                             td { recording.year }
                             td { recording.genre }
+                            td { recording.codec }
                             td { recording.filename }
                         }
         )
@@ -222,11 +350,14 @@ let menuItem (model: Model) (page: Page) (text: string) =
 
 let view model dispatch =
     Main()
+        .SidebarCollapsed(if model.menuCollapsed then "is-collapsed" else "")
+        .ToggleMenu(fun _ -> dispatch ToggleMenu)
+        .ToggleMenuText(if model.menuCollapsed then "Show menu" else "Hide menu")
         .Menu(
             concat {
                 menuItem model Home "Home"
                 menuItem model Counter "Counter"
-                menuItem model Data "Load data"
+                menuItem model Data "Music Catalog"
             }
         )
         .Body(
@@ -263,7 +394,13 @@ type MyApp() =
         let update = update recordingService
 
         Program.mkProgram
-            (fun _ -> initModel, Cmd.ofMsg GetSignedInAs)
+            (fun _ ->
+                initModel,
+                Cmd.batch [
+                    Cmd.ofMsg GetSignedInAs
+                    Cmd.ofMsg GetCodecOptions
+                    Cmd.ofMsg GetGenreOptions
+                ])
             update
             view
         |> Program.withRouter router

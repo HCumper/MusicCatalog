@@ -1,6 +1,9 @@
 <div class="columns">
-  <aside class="column sidebar is-narrow">
+  <aside class="column sidebar is-narrow ${SidebarCollapsed}">
     <section class="section">
+      <button class="button is-small sidebar-toggle" onclick="${ToggleMenu}">
+        ${ToggleMenuText}
+      </button>
       <nav class="menu">
         <ul class="menu-list">
           ${Menu}
@@ -55,36 +58,6 @@
         <p>
           The counter's value is: ${Value}
         </p>
-      </template>
-
-      <template id="Data">
-        <h1 class="title">
-          Load data
-          <button class="button" onclick="${Reload}">Reload</button>
-        </h1>
-        <p>
-          Signed in as ${Username}.
-          <button class="button" onclick="${SignOut}">Sign out</button>
-        </p>
-        <table class="table is-fullwidth">
-          <thead>
-            <tr>
-              <th>Title</th>
-              <th>Artist</th>
-              <th>Album</th>
-              <th>Track</th>
-              <th>Year</th>
-              <th>Genre</th>
-              <th>Filename</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${Rows}
-            <template id="EmptyData">
-              <tr><td colspan="7">Reloading music catalog...</td></tr>
-            </template>
-          </tbody>
-        </table>
       </template>
 
       <template id="SignIn">
