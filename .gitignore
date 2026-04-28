@@ -1,0 +1,13 @@
+bin/
+obj/
+/packages/
+riderModule.iml
+/_ReSharper.Caches/
+.idea/
+artifacts/
+*.DotSettings.user
+.idea/**/workspace.xml
+.idea/**/dataSources.local.xml
+.idea/**/dataSources/
+.idea/**/projectSettingsUpdater.xml
+appsettings.Development.json

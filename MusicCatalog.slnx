@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="MusicCatalog/src/MusicCatalog.Client/MusicCatalog.Client.fsproj" />
+  <Project Path="MusicCatalog/src/MusicCatalog.Server/MusicCatalog.Server.fsproj" />
+</Solution>
