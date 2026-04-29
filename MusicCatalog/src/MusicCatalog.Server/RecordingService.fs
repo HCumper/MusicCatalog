@@ -23,10 +23,26 @@ module RecordingRepository =
         { columns: string array
           rows: string array array }
 
+    type ImportRules =
+        { codecMappings: Collections.Generic.IReadOnlyDictionary<string, string>
+          classicalGenreTerms: string array
+          pianoGenreTerms: string array }
+
+    type ImportCounters =
+        { mutable unknownCodecCount: int
+          mutable classicalGenreCount: int
+          mutable pianoGenreCount: int }
+
     // Fail early when database access is not configured for the server.
     let private requireConnectionString (connectionString: string) =
         if String.IsNullOrWhiteSpace connectionString then
             invalidOp "Connection string 'MusicCatalogDb' is missing."
+
+    // Format timestamps once on the server so every client shows the same value.
+    let private displayTimestamp (timestamp: DateTime) =
+        timestamp
+            .ToUniversalTime()
+            .ToString("yyyy-MM-dd HH:mm:ss 'UTC'", CultureInfo.InvariantCulture)
 
     // Read one table cell, treating missing trailing cells as blank values.
     let private cellValue (cells: string array) index =
@@ -86,36 +102,21 @@ module RecordingRepository =
     let private rowValues (columnCount: int) (cells: string array) =
         Array.init columnCount (cellValue cells)
 
-    // Mp3tag reports codec names in a detailed form; store the smaller
-    // catalog-facing names so filtering stays predictable.
-    let private codecMappings =
-        dict [
-            "Advanced Systems Format", "ASF"
-            "Audio AAC", "AAC"
-            "Audio OPUS", "Opus"
-            "Audio VORBIS", "OGG/Vorbis"
-            "Free Lossless Audio Codec", "FLAC"
-            "Monkey's Audio 3.96", "APE"
-            "Monkey's Audio 3.97", "APE"
-            "Monkey's Audio 3.99", "APE"
-            "MPEG 1 Layer III", "MP3"
-            "MPEG 2 Layer III", "MP3"
-            "MPEG 2.5 Layer III", "MP3"
-            "MPEG-4 AAC", "AAC"
-            "MPEG-4 AAC LC ADTS", "AAC"
-            "MPEG-4 ALAC", "ALAC"
-            "Vorbis", "OGG/Vorbis"
-            "Windows Media Audio", "WMA"
-        ]
-
     // Convert a raw Mp3tag codec description to the catalog vocabulary.
-    let private normalizeCodec (codec: string) =
-        match codecMappings.TryGetValue(codec.Trim()) with
+    let private normalizeCodec (rules: ImportRules) (counters: ImportCounters) (codec: string) =
+        match rules.codecMappings.TryGetValue(codec.Trim()) with
         | true, normalized -> normalized
-        | false, _ -> "Unknown"
+        | false, _ ->
+            counters.unknownCodecCount <- counters.unknownCodecCount + 1
+            "Unknown"
 
     // Normalize the codec column in every imported row when that column exists.
-    let private normalizeCodecColumn (columns: string array) (rows: string array array) =
+    let private normalizeCodecColumn
+        (rules: ImportRules)
+        (counters: ImportCounters)
+        (columns: string array)
+        (rows: string array array)
+        =
         let codecIndex =
             columns
             |> Array.tryFindIndex (fun column ->
@@ -127,7 +128,7 @@ module RecordingRepository =
             rows
             |> Array.map (fun row ->
                 let normalized = Array.copy row
-                normalized[index] <- normalizeCodec normalized[index]
+                normalized[index] <- normalizeCodec rules counters normalized[index]
                 normalized)
 
     // Normalize common translated/classified genre values before inserting.
@@ -147,24 +148,33 @@ module RecordingRepository =
            "Classic" |]
 
     // Collapse common classical/piano genre variants to the app's standard names.
-    let private normalizeGenre (genre: string) =
+    let private normalizeGenre (rules: ImportRules) (counters: ImportCounters) (genre: string) =
         let containsPiano =
-            genre.IndexOf("piano", StringComparison.OrdinalIgnoreCase) >= 0
+            rules.pianoGenreTerms
+            |> Array.exists (fun term ->
+                genre.IndexOf(term, StringComparison.OrdinalIgnoreCase) >= 0)
 
         let containsClassicalTerm =
-            classicalGenreTerms
+            rules.classicalGenreTerms
             |> Array.exists (fun term ->
                 genre.IndexOf(term, StringComparison.OrdinalIgnoreCase) >= 0)
 
         if containsPiano then
+            counters.pianoGenreCount <- counters.pianoGenreCount + 1
             "Piano"
         elif containsClassicalTerm then
+            counters.classicalGenreCount <- counters.classicalGenreCount + 1
             "Classical"
         else
             genre
 
     // Normalize the genre column in every imported row when that column exists.
-    let private normalizeGenreColumn (columns: string array) (rows: string array array) =
+    let private normalizeGenreColumn
+        (rules: ImportRules)
+        (counters: ImportCounters)
+        (columns: string array)
+        (rows: string array array)
+        =
         let genreIndex =
             columns
             |> Array.tryFindIndex (fun column ->
@@ -176,7 +186,83 @@ module RecordingRepository =
             rows
             |> Array.map (fun row ->
                 let normalized = Array.copy row
-                normalized[index] <- normalizeGenre normalized[index]
+                normalized[index] <- normalizeGenre rules counters normalized[index]
+                normalized)
+
+    // Strip diacritics so accented and unaccented artist spellings group together.
+    let private removeAccents (value: string) =
+        let decomposed = value.Normalize(NormalizationForm.FormD)
+        let builder = StringBuilder()
+
+        for ch in decomposed do
+            if CharUnicodeInfo.GetUnicodeCategory(ch) <> UnicodeCategory.NonSpacingMark then
+                builder.Append(ch) |> ignore
+
+        builder.ToString().Normalize(NormalizationForm.FormC)
+
+    // Avoid treating ensemble names like "BBC Philharmonic, Vassily Sinaisky"
+    // as a simple "Last, First" personal-name form.
+    let private looksLikeEnsembleName (value: string) =
+        let ensembleTerms =
+            [| "band"
+               "choir"
+               "chorus"
+               "ensemble"
+               "orchestra"
+               "opera"
+               "philharmonic"
+               "quartet"
+               "quintet"
+               "symphony"
+               "trio" |]
+
+        ensembleTerms
+        |> Array.exists (fun term ->
+            value.IndexOf(term, StringComparison.OrdinalIgnoreCase) >= 0)
+
+    // Normalize a single artist credit for case, accents, and "Last, First" display.
+    let private normalizeArtistName (artist: string) =
+        let withoutAccents = removeAccents artist
+        let trimmed = withoutAccents.Trim()
+        let parts = trimmed.Split(',', StringSplitOptions.TrimEntries ||| StringSplitOptions.RemoveEmptyEntries)
+
+        let canonical =
+            if parts.Length = 2 && not (looksLikeEnsembleName parts[0]) then
+                $"{parts[0]}, {parts[1]}"
+            else
+                let nameParts = trimmed.Split(' ', StringSplitOptions.TrimEntries ||| StringSplitOptions.RemoveEmptyEntries)
+
+                if nameParts.Length >= 2
+                   && nameParts.Length <= 4
+                   && not (looksLikeEnsembleName trimmed) then
+                    let firstNames = nameParts[.. nameParts.Length - 2] |> String.concat " "
+                    let lastName = nameParts[nameParts.Length - 1]
+                    $"{lastName}, {firstNames}"
+                else
+                    trimmed
+
+        CultureInfo.InvariantCulture.TextInfo.ToTitleCase(canonical.ToLowerInvariant())
+
+    // Normalize artist cells while preserving common multi-artist separators.
+    let private normalizeArtist (artist: string) =
+        artist.Split(" - ", StringSplitOptions.None)
+        |> Array.map normalizeArtistName
+        |> String.concat " - "
+
+    // Normalize the artist column in every imported row when that column exists.
+    let private normalizeArtistColumn (columns: string array) (rows: string array array) =
+        let artistIndex =
+            columns
+            |> Array.tryFindIndex (fun column ->
+                String.Equals(column, "artist", StringComparison.OrdinalIgnoreCase))
+
+        match artistIndex with
+        | None -> rows
+        | Some index ->
+            rows
+            |> Array.map (fun row ->
+                let normalized = Array.copy row
+                normalized[index] <- normalizeArtist normalized[index]
                 normalized)
 
     // Format a genre value for display in dropdown options.
@@ -197,7 +283,7 @@ module RecordingRepository =
         |> Seq.toArray
 
     // Parse the Mp3tag export into sanitized columns and normalized row values.
-    let readSourceFile (sourcePath: string) =
+    let readSourceFile (rules: ImportRules) (counters: ImportCounters) (sourcePath: string) =
         let html = File.ReadAllText(sourcePath)
 
         let rows =
@@ -232,19 +318,25 @@ module RecordingRepository =
 
         let normalizedRows =
             sourceRows
-            |> normalizeCodecColumn columnNames
-            |> normalizeGenreColumn columnNames
+            |> normalizeCodecColumn rules counters columnNames
+            |> normalizeGenreColumn rules counters columnNames
+            |> normalizeArtistColumn columnNames
 
         { columns = columnNames
           rows = normalizedRows }
 
     // Replace music_catalog with rows from the latest Mp3tag export.
-    let reloadMusicCatalog connectionString sourcePath =
+    let reloadMusicCatalog connectionString sourcePath rules =
         task {
             requireConnectionString connectionString
             Console.WriteLine($"Reloading music_catalog from {sourcePath}")
 
-            let sourceTable = readSourceFile sourcePath
+            let counters =
+                { unknownCodecCount = 0
+                  classicalGenreCount = 0
+                  pianoGenreCount = 0 }
+
+            let sourceTable = readSourceFile rules counters sourcePath
             Console.WriteLine($"Source has {sourceTable.columns.Length} columns and {sourceTable.rows.Length} rows")
 
             use conn = new NpgsqlConnection(connectionString)
@@ -310,10 +402,112 @@ module RecordingRepository =
                 let! _ = insertCmd.ExecuteNonQueryAsync()
                 ()
 
+            let reloadedAt = DateTime.UtcNow
+
+            use createMetadataCmd =
+                new NpgsqlCommand(
+                    """
+                    create table if not exists music_catalog_import_metadata (
+                        id integer primary key,
+                        reloaded_at timestamp with time zone not null,
+                        rows_loaded integer not null,
+                        unknown_codec_count integer not null,
+                        classical_genre_count integer not null,
+                        piano_genre_count integer not null
+                    )
+                    """,
+                    conn,
+                    tx
+                )
+
+            let! _ = createMetadataCmd.ExecuteNonQueryAsync()
+
+            use updateMetadataCmd =
+                new NpgsqlCommand(
+                    """
+                    insert into music_catalog_import_metadata (
+                        id,
+                        reloaded_at,
+                        rows_loaded,
+                        unknown_codec_count,
+                        classical_genre_count,
+                        piano_genre_count
+                    )
+                    values (
+                        1,
+                        @reloadedAt,
+                        @rowsLoaded,
+                        @unknownCodecCount,
+                        @classicalGenreCount,
+                        @pianoGenreCount
+                    )
+                    on conflict (id) do update set
+                        reloaded_at = excluded.reloaded_at,
+                        rows_loaded = excluded.rows_loaded,
+                        unknown_codec_count = excluded.unknown_codec_count,
+                        classical_genre_count = excluded.classical_genre_count,
+                        piano_genre_count = excluded.piano_genre_count
+                    """,
+                    conn,
+                    tx
+                )
+
+            updateMetadataCmd.Parameters.AddWithValue("reloadedAt", reloadedAt) |> ignore
+            updateMetadataCmd.Parameters.AddWithValue("rowsLoaded", sourceTable.rows.Length) |> ignore
+            updateMetadataCmd.Parameters.AddWithValue("unknownCodecCount", counters.unknownCodecCount) |> ignore
+            updateMetadataCmd.Parameters.AddWithValue("classicalGenreCount", counters.classicalGenreCount) |> ignore
+            updateMetadataCmd.Parameters.AddWithValue("pianoGenreCount", counters.pianoGenreCount) |> ignore
+            let! _ = updateMetadataCmd.ExecuteNonQueryAsync()
+
             do! tx.CommitAsync()
             Console.WriteLine("Finished reloading music_catalog")
 
-            return Array.empty<Client.Main.Recording>
+            let diagnostics: Client.Main.ImportDiagnostics =
+                { rowsLoaded = sourceTable.rows.Length
+                  unknownCodecCount = counters.unknownCodecCount
+                  classicalGenreCount = counters.classicalGenreCount
+                  pianoGenreCount = counters.pianoGenreCount
+                  lastReloaded = displayTimestamp reloadedAt }
+
+            return diagnostics
+        }
+
+    // Read the timestamp of the last successful source reload.
+    let lastReloaded connectionString =
+        task {
+            requireConnectionString connectionString
+
+            use conn = new NpgsqlConnection(connectionString)
+            do! conn.OpenAsync()
+
+            let tableExistsSql =
+                """
+                select exists (
+                    select 1
+                    from information_schema.tables
+                    where table_schema = 'public'
+                      and table_name = 'music_catalog_import_metadata'
+                )
+                """
+
+            use tableExistsCmd = new NpgsqlCommand(tableExistsSql, conn)
+            let! tableExists = tableExistsCmd.ExecuteScalarAsync()
+
+            if not (tableExists :?> bool) then
+                return ""
+            else
+                use cmd =
+                    new NpgsqlCommand(
+                        "select reloaded_at from music_catalog_import_metadata where id = 1",
+                        conn
+                    )
+
+                let! result = cmd.ExecuteScalarAsync()
+
+                if isNull result || result = box DBNull.Value then
+                    return ""
+                else
+                    return displayTimestamp (result :?> DateTime)
         }
 
     // Load distinct genre values for the search dropdown.
@@ -398,8 +592,140 @@ module RecordingRepository =
                         |> Seq.toArray
         }
 
-    // Add one exact-match WHERE predicate when a search criterion is selected.
-    let private addOptionalFilter
+    // Load a capped list of artist values matching the current typeahead text.
+    let artistOptions connectionString search =
+        task {
+            requireConnectionString connectionString
+
+            use conn = new NpgsqlConnection(connectionString)
+            do! conn.OpenAsync()
+
+            let tableExistsSql =
+                """
+                select exists (
+                    select 1
+                    from information_schema.tables
+                    where table_schema = 'public'
+                      and table_name = 'music_catalog'
+                )
+                """
+
+            use tableExistsCmd = new NpgsqlCommand(tableExistsSql, conn)
+            let! tableExists = tableExistsCmd.ExecuteScalarAsync()
+
+            if not (tableExists :?> bool) then
+                return Array.empty
+            else
+                let artistColumnExistsSql =
+                    """
+                    select exists (
+                        select 1
+                        from information_schema.columns
+                        where table_schema = 'public'
+                          and table_name = 'music_catalog'
+                          and column_name = 'artist'
+                    )
+                    """
+
+                use artistColumnExistsCmd = new NpgsqlCommand(artistColumnExistsSql, conn)
+                let! artistColumnExists = artistColumnExistsCmd.ExecuteScalarAsync()
+
+                if not (artistColumnExists :?> bool) then
+                    return Array.empty
+                else
+                    use cmd =
+                        new NpgsqlCommand(
+                            """
+                            select distinct artist
+                            from music_catalog
+                            where artist is not null
+                              and btrim(artist) <> ''
+                              and (@search = '' or artist ilike @pattern)
+                            order by artist
+                            limit 100
+                            """,
+                            conn
+                        )
+
+                    cmd.Parameters.AddWithValue("search", search) |> ignore
+                    cmd.Parameters.AddWithValue("pattern", "%" + search + "%") |> ignore
+                    use! reader = cmd.ExecuteReaderAsync()
+                    let artists = ResizeArray<string>()
+
+                    while! reader.ReadAsync() do
+                        artists.Add(reader.GetString(0))
+
+                    return artists.ToArray()
+        }
+
+    // Load a capped list of title values matching the current typeahead text.
+    let titleOptions connectionString search =
+        task {
+            requireConnectionString connectionString
+
+            use conn = new NpgsqlConnection(connectionString)
+            do! conn.OpenAsync()
+
+            let tableExistsSql =
+                """
+                select exists (
+                    select 1
+                    from information_schema.tables
+                    where table_schema = 'public'
+                      and table_name = 'music_catalog'
+                )
+                """
+
+            use tableExistsCmd = new NpgsqlCommand(tableExistsSql, conn)
+            let! tableExists = tableExistsCmd.ExecuteScalarAsync()
+
+            if not (tableExists :?> bool) then
+                return Array.empty
+            else
+                let titleColumnExistsSql =
+                    """
+                    select exists (
+                        select 1
+                        from information_schema.columns
+                        where table_schema = 'public'
+                          and table_name = 'music_catalog'
+                          and column_name = 'title'
+                    )
+                    """
+
+                use titleColumnExistsCmd = new NpgsqlCommand(titleColumnExistsSql, conn)
+                let! titleColumnExists = titleColumnExistsCmd.ExecuteScalarAsync()
+
+                if not (titleColumnExists :?> bool) then
+                    return Array.empty
+                else
+                    use cmd =
+                        new NpgsqlCommand(
+                            """
+                            select distinct title
+                            from music_catalog
+                            where title is not null
+                              and btrim(title) <> ''
+                              and (@search = '' or title ilike @pattern)
+                            order by title
+                            limit 100
+                            """,
+                            conn
+                        )
+
+                    cmd.Parameters.AddWithValue("search", search) |> ignore
+                    cmd.Parameters.AddWithValue("pattern", "%" + search + "%") |> ignore
+                    use! reader = cmd.ExecuteReaderAsync()
+                    let titles = ResizeArray<string>()
+
+                    while! reader.ReadAsync() do
+                        titles.Add(reader.GetString(0))
+
+                    return titles.ToArray()
+        }
+
+    // Add one exact-match WHERE predicate when a dropdown criterion is selected.
+    let private addOptionalExactFilter
         (filters: ResizeArray<string>)
         (cmd: NpgsqlCommand)
         (name: string)
@@ -410,8 +736,20 @@ module RecordingRepository =
             filters.Add($"{quoteIdentifier column} = @{name}")
             cmd.Parameters.AddWithValue(name, value) |> ignore
 
-    // Query music_catalog using optional dropdown criteria and return grid rows.
-    let searchRecordings connectionString title artist genre codec =
+    // Add one case-insensitive contains predicate when typed search text is provided.
+    let private addOptionalContainsFilter
+        (filters: ResizeArray<string>)
+        (cmd: NpgsqlCommand)
+        (name: string)
+        (column: string)
+        (value: string)
+        =
+        if not (String.IsNullOrWhiteSpace value) then
+            filters.Add($"{quoteIdentifier column} ilike @{name}")
+            cmd.Parameters.AddWithValue(name, "%" + value + "%") |> ignore
+
+    // Query music_catalog using optional dropdown criteria and return one result page.
+    let searchRecordings connectionString title artist genre codec pageNumber pageSize =
         task {
             requireConnectionString connectionString
 
@@ -422,17 +760,30 @@ module RecordingRepository =
             use cmd = new NpgsqlCommand()
             cmd.Connection <- conn
 
-            // Empty criteria mean "All"; selected criteria become exact matches.
-            addOptionalFilter filters cmd "title" "title" title
-            addOptionalFilter filters cmd "artist" "artist" artist
-            addOptionalFilter filters cmd "genre" "genre" genre
-            addOptionalFilter filters cmd "codec" "codec" codec
+            // Empty criteria mean "All"; typed title/artist use contains matching.
+            addOptionalContainsFilter filters cmd "title" "title" title
+            addOptionalContainsFilter filters cmd "artist" "artist" artist
+            addOptionalExactFilter filters cmd "genre" "genre" genre
+            addOptionalExactFilter filters cmd "codec" "codec" codec
 
             let whereClause =
                 if filters.Count = 0 then
                     ""
                 else
                     " where " + String.concat " and " filters
+
+            use countCmd = new NpgsqlCommand()
+            countCmd.Connection <- conn
+            countCmd.CommandText <- $"select count(*) from music_catalog {whereClause}"
+
+            for parameter in cmd.Parameters do
+                countCmd.Parameters.AddWithValue(parameter.ParameterName, parameter.Value) |> ignore
+
+            let! totalCountValue = countCmd.ExecuteScalarAsync()
+            let totalCount = Convert.ToInt32(totalCountValue)
+            let safePageSize = max 1 pageSize
+            let safePageNumber = max 1 pageNumber
+            let offset = (safePageNumber - 1) * safePageSize
 
             cmd.CommandText <-
                 $"""
@@ -448,8 +799,11 @@ module RecordingRepository =
                 from music_catalog
                 {whereClause}
                 order by title, artist, album
-                limit 500
+                limit @pageSize offset @offset
                 """
+
+            cmd.Parameters.AddWithValue("pageSize", safePageSize) |> ignore
+            cmd.Parameters.AddWithValue("offset", offset) |> ignore
 
             use! reader = cmd.ExecuteReaderAsync()
             let recordings = ResizeArray<Client.Main.Recording>()
@@ -466,12 +820,15 @@ module RecordingRepository =
                     filename = reader.GetString(7)
                 }
 
-            return recordings.ToArray()
+            let result: Client.Main.SearchResult =
+                { rows = recordings.ToArray()
+                  totalCount = totalCount }
+
+            return result
         }
 
 type RecordingService
     (
-        ctx: IRemoteContext,
         config: IConfiguration,
         env: IWebHostEnvironment
     ) =
@@ -480,37 +837,58 @@ type RecordingService
     let connectionString = config.GetConnectionString("MusicCatalogDb")
     let sourcePath = Path.Combine(env.ContentRootPath, "data", "mp3tag.html")
 
-    // Codec choices are configuration-driven because they are a fixed
-    // application vocabulary, unlike genres which come from the loaded catalog.
-    // Load configured codec options for the search dropdown.
-    let codecOptions () =
-        config.GetSection("MusicCatalog:CodecOptions").GetChildren()
+    // Load key/value mappings from configuration sections.
+    let configMap sectionName =
+        let values = Collections.Generic.Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+
+        for item in config.GetSection(sectionName).GetChildren() do
+            if not (String.IsNullOrWhiteSpace item.Key)
+               && not (String.IsNullOrWhiteSpace item.Value) then
+                values[item.Key.Trim()] <- item.Value.Trim()
+
+        values :> Collections.Generic.IReadOnlyDictionary<string, string>
+
+    // Load string-array settings from configuration sections.
+    let configList sectionName =
+        config.GetSection(sectionName).GetChildren()
         |> Seq.choose (fun item ->
             if String.IsNullOrWhiteSpace item.Value then
                 None
             else
                 Some(item.Value.Trim()))
+        |> Seq.toArray
+
+    // Build import rules from appsettings so normalization changes do not require code edits.
+    let importRules () : RecordingRepository.ImportRules =
+        { codecMappings = configMap "MusicCatalog:CodecMappings"
+          classicalGenreTerms = configList "MusicCatalog:ClassicalGenreTerms"
+          pianoGenreTerms = configList "MusicCatalog:PianoGenreTerms" }
+
+    // Codec choices are configuration-driven because they are a fixed
+    // application vocabulary, unlike genres which come from the loaded catalog.
+    // Load configured codec options for the search dropdown.
+    let codecOptions () =
+        configList "MusicCatalog:CodecOptions"
         |> Seq.distinct
         |> Seq.sort
         |> Seq.toArray
 
     override _.Handler =
-        { getRecordings =
-            ctx.Authorize
-            <| fun () ->
+        { reloadSource =
+            fun () ->
                 async {
-                    Console.WriteLine("Received getRecordings reload request")
+                    Console.WriteLine("Received reloadSource request")
 
                     return!
                         RecordingRepository.reloadMusicCatalog
                             connectionString
                             sourcePath
+                            (importRules ())
                         |> Async.AwaitTask
                 }
 
           addRecording =
-            ctx.Authorize
-            <| fun _ ->
+            fun _ ->
                 async {
                     return
                         raise
@@ -526,17 +904,39 @@ type RecordingService
                 }
 
           getGenreOptions =
-            ctx.Authorize
-            <| fun () ->
+            fun () ->
                 async {
                     return!
                         RecordingRepository.genreOptions connectionString
                         |> Async.AwaitTask
                 }
 
+          getLastReloaded =
+            fun () ->
+                async {
+                    return!
+                        RecordingRepository.lastReloaded connectionString
+                        |> Async.AwaitTask
+                }
+
+          getArtistOptions =
+            fun search ->
+                async {
+                    return!
+                        RecordingRepository.artistOptions connectionString search
+                        |> Async.AwaitTask
+                }
+
+          getTitleOptions =
+            fun search ->
+                async {
+                    return!
+                        RecordingRepository.titleOptions connectionString search
+                        |> Async.AwaitTask
+                }
+
           searchRecordings =
-            ctx.Authorize
-            <| fun (title, artist, genre, codec) ->
+            fun (title, artist, genre, codec, pageNumber, pageSize) ->
                 async {
                     return!
                         RecordingRepository.searchRecordings
@@ -545,33 +945,8 @@ type RecordingService
                             artist
                             genre
                             codec
+                            pageNumber
+                            pageSize
                         |> Async.AwaitTask
                 }
-
-          signIn =
-            fun (username, password) ->
-                async {
-                    if password = "password" then
-                        do!
-                            ctx.HttpContext.AsyncSignIn(
-                                username,
-                                TimeSpan.FromDays(365.)
-                            )
-
-                        return Some username
-                    else
-                        return None
-                }
-
-          signOut =
-            fun () ->
-                async {
-                    return! ctx.HttpContext.AsyncSignOut()
-                }
-
-          getUsername =
-            ctx.Authorize
-            <| fun () ->
-                async {
-                    return ctx.HttpContext.User.Identity.Name
-                } }
+        }

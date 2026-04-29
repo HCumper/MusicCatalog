@@ -11,29 +11,26 @@ open Bolero.Remoting
 open Bolero.Remoting.Client
 open Bolero.Templating.Client
 
-/// Routing endpoints definition.
-type Page =
-    | [<EndPoint "/">] Home
-    | [<EndPoint "/counter">] Counter
-    | [<EndPoint "/data">] Data
-
 /// The Elmish application's model.
 type Model =
-    { page: Page
-      counter: int
-      recordings: Recording[] option
+    { recordings: Recording[] option
+      titleSearch: string
       titleFilter: string
+      artistSearch: string
       artistFilter: string
       genreFilter: string
       codecFilter: string
+      titleOptions: string[]
+      artistOptions: string[]
       genreOptions: string[]
       codecOptions: string[]
-      menuCollapsed: bool
+      reloadDiagnostics: ImportDiagnostics option
+      lastReloaded: string
+      lastSearchCount: int option
+      pageNumber: int
+      pageSize: int
       error: string option
-      username: string
-      password: string
-      signedInAs: option<string>
-      signInFailed: bool }
+      }
 
 and Recording =
     { title: string
@@ -45,56 +42,42 @@ and Recording =
       codec: string
       filename: string }
 
-// Provides temporary client-side rows used by the static title/artist filters.
-let sampleRecordings =
-    [| { title = "- 2. Galop. Presto"
-         artist = "Kathryn Stott - BBC Philharmonic"
-         album = "Kabalevsky: Piano Concertos Nos. 2 & 3"
-         track = "06/17"
-         year = "2003"
-         genre = "Classical"
-         codec = "MP3"
-         filename = "- 2. Galop. Presto.mp3" }
-       { title = "Decomposing Composers"
-         artist = "Monty Python"
-         album = "The Final Rip Off"
-         track = "20"
-         year = "1988"
-         genre = "Comedy"
-         codec = "WMA"
-         filename = "Decomposing Composers Monty Python 20.wma" }
-       { title = "Great Composers Love Folk Songs Too"
-         artist = "Various Artists"
-         album = "Classical Folk"
-         track = "03"
-         year = "1997"
-         genre = "Classical"
-         codec = "FLAC"
-         filename = "Great Composers Love Folk Songs Too.flac" } |]
+and SearchResult =
+    { rows: Recording[]
+      totalCount: int }
+
+and ImportDiagnostics =
+    { rowsLoaded: int
+      unknownCodecCount: int
+      classicalGenreCount: int
+      pianoGenreCount: int
+      lastReloaded: string }
 
 // Build the initial application state before startup commands load server data.
 let initModel =
-    { page = Home
-      counter = 0
-      recordings = None
+    { recordings = None
+      titleSearch = ""
       titleFilter = ""
+      artistSearch = ""
       artistFilter = ""
       genreFilter = ""
       codecFilter = ""
+      titleOptions = Array.empty
+      artistOptions = Array.empty
       genreOptions = Array.empty
       codecOptions = Array.empty
-      menuCollapsed = false
-      error = None
-      username = ""
-      password = ""
-      signedInAs = None
-      signInFailed = false }
+      reloadDiagnostics = None
+      lastReloaded = ""
+      lastSearchCount = None
+      pageNumber = 1
+      pageSize = 100
+      error = None }
 
 /// Remote service definition.
 type RecordingService =
     {
-        /// Get the list of all recordings in the collection.
-        getRecordings: unit -> Async<Recording[]>
+        /// Reload the catalog table from the source export and return diagnostics.
+        reloadSource: unit -> Async<ImportDiagnostics>
 
         /// Add a recording in the collection.
         addRecording: Recording -> Async<unit>
@@ -105,17 +88,17 @@ type RecordingService =
         /// Get distinct genres from the music catalog.
         getGenreOptions: unit -> Async<string[]>
 
-        /// Search music catalog rows by selected criteria.
-        searchRecordings: string * string * string * string -> Async<Recording[]>
+        /// Get the timestamp from the most recent source reload.
+        getLastReloaded: unit -> Async<string>
 
-        /// Sign into the application.
-        signIn: string * string -> Async<option<string>>
+        /// Get matching artists for the current typeahead text.
+        getArtistOptions: string -> Async<string[]>
 
-        /// Get the user's name, or None if they are not authenticated.
-        getUsername: unit -> Async<string>
+        /// Get matching titles for the current typeahead text.
+        getTitleOptions: string -> Async<string[]>
 
-        /// Sign out from the application.
-        signOut: unit -> Async<unit>
+        /// Search music catalog rows by selected criteria and page.
+        searchRecordings: string * string * string * string * int * int -> Async<SearchResult>
     }
 
     interface IRemoteService with
@@ -123,13 +106,12 @@ type RecordingService =
 
 /// The Elmish application's update messages.
 type Message =
-    | SetPage of Page
-    | Increment
-    | Decrement
-    | SetCounter of int
-    | GetRecordings
-    | GotRecordings of Recording[]
+    | ReloadSource
+    | SourceReloaded of ImportDiagnostics
+    | GotRecordings of SearchResult
+    | SetTitleSearch of string
     | SetTitleFilter of string
+    | SetArtistSearch of string
     | SetArtistFilter of string
     | SetGenreFilter of string
     | SetCodecFilter of string
@@ -137,48 +119,51 @@ type Message =
     | RecvCodecOptions of string[]
     | GetGenreOptions
     | RecvGenreOptions of string[]
+    | GetLastReloaded
+    | RecvLastReloaded of string
+    | GetArtistOptions of string
+    | RecvArtistOptions of string[]
+    | GetTitleOptions of string
+    | RecvTitleOptions of string[]
     | SearchCatalog
-    | ToggleMenu
-    | SetUsername of string
-    | SetPassword of string
-    | ClearLoginForm
-    | GetSignedInAs
-    | RecvSignedInAs of option<string>
-    | SendSignIn
-    | RecvSignIn of option<string>
-    | SendSignOut
-    | RecvSignOut
+    | StartSearch
+    | PreviousPage
+    | NextPage
+    | ClearFilters
+    | DismissReloadComplete
     | Error of exn
     | ClearError
 
 // Apply Elmish messages to the model and start remote commands when needed.
 let update remote message model =
-    // After login, clear credentials but do not load catalog data until requested.
-    let onSignIn =
-        function
-        | Some _ -> Cmd.ofMsg ClearLoginForm
-        | None -> Cmd.none
-
     match message with
-    | SetPage page -> { model with page = page }, Cmd.none
-
-    | Increment ->
-        { model with
-            counter = model.counter + 1 },
-        Cmd.none
-    | Decrement ->
-        { model with
-            counter = model.counter - 1 },
-        Cmd.none
-    | SetCounter value -> { model with counter = value }, Cmd.none
-
-    | GetRecordings ->
-        let cmd = Cmd.OfAsync.either remote.getRecordings () GotRecordings Error
+    | ReloadSource ->
+        let cmd = Cmd.OfAsync.either remote.reloadSource () SourceReloaded Error
         { model with recordings = None }, cmd
-    | GotRecordings recordings ->
-        { model with recordings = Some recordings }, Cmd.ofMsg GetGenreOptions
+    | SourceReloaded diagnostics ->
+        { model with
+            recordings = Some Array.empty
+            lastSearchCount = None
+            reloadDiagnostics = Some diagnostics
+            lastReloaded = diagnostics.lastReloaded },
+        Cmd.ofMsg GetGenreOptions
+    | GotRecordings result ->
+        { model with
+            recordings = Some result.rows
+            lastSearchCount = Some result.totalCount },
+        Cmd.ofMsg GetGenreOptions
 
+    | SetTitleSearch value ->
+        { model with
+            titleSearch = value
+            titleFilter = "" },
+        Cmd.ofMsg (GetTitleOptions value)
     | SetTitleFilter value -> { model with titleFilter = value }, Cmd.none
+    | SetArtistSearch value ->
+        { model with
+            artistSearch = value
+            artistFilter = "" },
+        Cmd.ofMsg (GetArtistOptions value)
     | SetArtistFilter value -> { model with artistFilter = value }, Cmd.none
     | SetGenreFilter value -> { model with genreFilter = value }, Cmd.none
     | SetCodecFilter value -> { model with codecFilter = value }, Cmd.none
@@ -201,78 +186,100 @@ let update remote message model =
             genreOptions = genres
             genreFilter = selectedGenre },
         Cmd.none
+    | GetLastReloaded ->
+        model,
+        Cmd.OfAsync.either remote.getLastReloaded () RecvLastReloaded Error
+    | RecvLastReloaded lastReloaded ->
+        { model with lastReloaded = lastReloaded }, Cmd.none
+    | GetArtistOptions search ->
+        model,
+        Cmd.OfAsync.either remote.getArtistOptions search RecvArtistOptions Error
+    | RecvArtistOptions artists ->
+        let selectedArtist =
+            if Array.contains model.artistFilter artists then
+                model.artistFilter
+            else
+                ""
+
+        { model with
+            artistOptions = artists
+            artistFilter = selectedArtist },
+        Cmd.none
+    | GetTitleOptions search ->
+        model,
+        Cmd.OfAsync.either remote.getTitleOptions search RecvTitleOptions Error
+    | RecvTitleOptions titles ->
+        let selectedTitle =
+            if Array.contains model.titleFilter titles then
+                model.titleFilter
+            else
+                ""
+
+        { model with
+            titleOptions = titles
+            titleFilter = selectedTitle },
+        Cmd.none
+    | StartSearch ->
+        { model with pageNumber = 1 }, Cmd.ofMsg SearchCatalog
     | SearchCatalog ->
+        let titleCriteria =
+            if String.IsNullOrWhiteSpace model.titleSearch then
+                model.titleFilter
+            else
+                model.titleSearch
+
+        let artistCriteria =
+            if String.IsNullOrWhiteSpace model.artistSearch then
+                model.artistFilter
+            else
+                model.artistSearch
+
         let criteria =
-            model.titleFilter,
-            model.artistFilter,
+            titleCriteria,
+            artistCriteria,
             model.genreFilter,
-            model.codecFilter
+            model.codecFilter,
+            model.pageNumber,
+            model.pageSize
 
         { model with recordings = None },
         Cmd.OfAsync.either remote.searchRecordings criteria GotRecordings Error
-    | ToggleMenu -> { model with menuCollapsed = not model.menuCollapsed }, Cmd.none
+    | PreviousPage ->
+        if model.pageNumber <= 1 then
+            model, Cmd.none
+        else
+            { model with pageNumber = model.pageNumber - 1 }, Cmd.ofMsg SearchCatalog
+    | NextPage ->
+        let totalCount = defaultArg model.lastSearchCount 0
+        let maxPage = max 1 ((totalCount + model.pageSize - 1) / model.pageSize)
 
-    | SetUsername s -> { model with username = s }, Cmd.none
-    | SetPassword s -> { model with password = s }, Cmd.none
-    | ClearLoginForm ->
+        if model.pageNumber >= maxPage then
+            model, Cmd.none
+        else
+            { model with pageNumber = model.pageNumber + 1 }, Cmd.ofMsg SearchCatalog
+    | ClearFilters ->
         { model with
-            username = ""
-            password = "" },
+            titleSearch = ""
+            titleFilter = ""
+            artistSearch = ""
+            artistFilter = ""
+            genreFilter = ""
+            codecFilter = ""
+            pageNumber = 1
+            lastSearchCount = None
+            recordings = None },
         Cmd.none
-    | GetSignedInAs ->
-        model,
-        Cmd.OfAuthorized.either remote.getUsername () RecvSignedInAs Error
-    | RecvSignedInAs username ->
-        { model with signedInAs = username }, onSignIn username
-    | SendSignIn ->
-        model,
-        Cmd.OfAsync.either
-            remote.signIn
-            (model.username, model.password)
-            RecvSignIn
-            Error
-    | RecvSignIn username ->
-        { model with
-            signedInAs = username
-            signInFailed = Option.isNone username },
-        onSignIn username
-    | SendSignOut ->
-        model,
-        Cmd.OfAsync.either remote.signOut () (fun () -> RecvSignOut) Error
-    | RecvSignOut ->
-        { model with
-            signedInAs = None
-            signInFailed = false },
-        Cmd.none
+    | DismissReloadComplete ->
+        { model with reloadDiagnostics = None }, Cmd.none
 
-    | Error RemoteUnauthorizedException ->
-        { model with
-            error = Some "You have been logged out."
-            signedInAs = None },
-        Cmd.none
     | Error exn -> { model with error = Some exn.Message }, Cmd.none
     | ClearError -> { model with error = None }, Cmd.none
-
-/// Connects the routing system to the Elmish application.
-let router = Router.infer SetPage (fun model -> model.page)
 
 // Bind the application shell template.
 type Main = Template<"wwwroot/main.html">
 
 // Bind the separate music catalog page template.
 type MusicCatalog = Template<"wwwroot/music-catalog.html">
-
-// Render the home page from the shell template.
-let homePage model dispatch = Main.Home().Elt()
-
-// Render the sample counter page from the starter app.
-let counterPage model dispatch =
-    Main
-        .Counter()
-        .Decrement(fun _ -> dispatch Decrement)
-        .Increment(fun _ -> dispatch Increment)
-        .Value(model.counter, fun v -> dispatch (SetCounter v))
-        .Elt()
 
 // Render an "All" option followed by selectable values for a dropdown.
 let optionList selected values =
@@ -291,29 +298,67 @@ let optionList selected values =
             }
     }
 
-// Produce a sorted unique list from the sample rows.
-let distinctValues selector =
-    sampleRecordings
-    |> Array.map selector
-    |> Array.distinct
-    |> Array.sort
-
 // Render the searchable music catalog page and wire its controls to messages.
-let dataPage model (username: string) dispatch =
+let dataPage (model: Model) dispatch =
     MusicCatalog
         .MusicCatalog()
-        .Reload(fun _ -> dispatch GetRecordings)
-        .Search(fun _ -> dispatch SearchCatalog)
-        .Username(username)
-        .SignOut(fun _ -> dispatch SendSignOut)
+        .Reload(fun _ -> dispatch ReloadSource)
+        .LastReloaded(
+            if String.IsNullOrWhiteSpace model.lastReloaded then
+                "Last reloaded: never"
+            else
+                "Last reloaded: " + model.lastReloaded
+        )
+        .Search(fun _ -> dispatch StartSearch)
+        .PreviousPage(fun _ -> dispatch PreviousPage)
+        .NextPage(fun _ -> dispatch NextPage)
+        .ClearFilters(fun _ -> dispatch ClearFilters)
+        .TitleSearch(model.titleSearch, fun value -> dispatch (SetTitleSearch value))
         .Title(model.titleFilter, fun value -> dispatch (SetTitleFilter value))
+        .ArtistSearch(model.artistSearch, fun value -> dispatch (SetArtistSearch value))
         .Artist(model.artistFilter, fun value -> dispatch (SetArtistFilter value))
         .Genre(model.genreFilter, fun value -> dispatch (SetGenreFilter value))
         .Codec(model.codecFilter, fun value -> dispatch (SetCodecFilter value))
-        .TitleOptions(optionList model.titleFilter (distinctValues (fun recording -> recording.title)))
-        .ArtistOptions(optionList model.artistFilter (distinctValues (fun recording -> recording.artist)))
+        .TitleOptions(optionList model.titleFilter model.titleOptions)
+        .ArtistOptions(optionList model.artistFilter model.artistOptions)
         .GenreOptions(optionList model.genreFilter model.genreOptions)
         .CodecOptions(optionList model.codecFilter model.codecOptions)
+        .ResultCount(
+            cond model.lastSearchCount
+            <| function
+                | None -> empty ()
+                | Some count ->
+                    let startRow =
+                        if count = 0 then
+                            0
+                        else
+                            ((model.pageNumber - 1) * model.pageSize) + 1
+
+                    let endRow = min count (model.pageNumber * model.pageSize)
+
+                    MusicCatalog
+                        .ResultCount()
+                        .Count(string count)
+                        .StartRow(string startRow)
+                        .EndRow(string endRow)
+                        .PageNumber(string model.pageNumber)
+                        .Elt()
+        )
+        .ReloadCompleteDialog(
+            cond model.reloadDiagnostics
+            <| function
+                | None -> empty ()
+                | Some diagnostics ->
+                    MusicCatalog
+                        .ReloadCompleteDialog()
+                        .RowCount(string diagnostics.rowsLoaded)
+                        .UnknownCodecCount(string diagnostics.unknownCodecCount)
+                        .ClassicalGenreCount(string diagnostics.classicalGenreCount)
+                        .PianoGenreCount(string diagnostics.pianoGenreCount)
+                        .LastReloaded(diagnostics.lastReloaded)
+                        .Close(fun _ -> dispatch DismissReloadComplete)
+                        .Elt()
+        )
         .Rows(
             cond model.recordings
             <| function
@@ -334,61 +379,10 @@ let dataPage model (username: string) dispatch =
         )
         .Elt()
 
-// Render the sign-in form and validation message.
-let signInPage model dispatch =
-    Main
-        .SignIn()
-        .Username(model.username, fun s -> dispatch (SetUsername s))
-        .Password(model.password, fun s -> dispatch (SetPassword s))
-        .SignIn(fun _ -> dispatch SendSignIn)
-        .ErrorNotification(
-            cond model.signInFailed
-            <| function
-                | false -> empty ()
-                | true ->
-                    Main
-                        .ErrorNotification()
-                        .HideClass("is-hidden")
-                        .Text(
-                            "Sign in failed. Use any username and the password \"password\"."
-                        )
-                        .Elt()
-        )
-        .Elt()
-
-// Render one left-navigation item with active-route styling.
-let menuItem (model: Model) (page: Page) (text: string) =
-    Main
-        .MenuItem()
-        .Active(if model.page = page then "is-active" else "")
-        .Url(router.Link page)
-        .Text(text)
-        .Elt()
-
 // Render the shell around the current page and global error notification.
-let view model dispatch =
+let view (model: Model) dispatch =
     Main()
-        .SidebarCollapsed(if model.menuCollapsed then "is-collapsed" else "")
-        .ToggleMenu(fun _ -> dispatch ToggleMenu)
-        .ToggleMenuText(if model.menuCollapsed then "Show menu" else "Hide menu")
-        .Menu(
-            concat {
-                menuItem model Home "Home"
-                menuItem model Counter "Counter"
-                menuItem model Data "Music Catalog"
-            }
-        )
-        .Body(
-            cond model.page
-            <| function
-                | Home -> homePage model dispatch
-                | Counter -> counterPage model dispatch
-                | Data ->
-                    cond model.signedInAs
-                    <| function
-                        | Some username -> dataPage model username dispatch
-                        | None -> signInPage model dispatch
-        )
+        .Body(dataPage model dispatch)
         .Error(
             cond model.error
             <| function
@@ -417,13 +411,12 @@ type MyApp() =
             (fun _ ->
                 initModel,
                 Cmd.batch [
-                    Cmd.ofMsg GetSignedInAs
                     Cmd.ofMsg GetCodecOptions
                     Cmd.ofMsg GetGenreOptions
+                    Cmd.ofMsg GetLastReloaded
                 ])
             update
             view
-        |> Program.withRouter router
 #if DEBUG
         |> Program.withHotReload
 

@@ -1,4 +1,14 @@
 drop table if exists music_catalog;
+drop table if exists music_catalog_import_metadata;
+
+create table music_catalog_import_metadata (
+    id integer primary key,
+    reloaded_at timestamp with time zone not null,
+    rows_loaded integer not null,
+    unknown_codec_count integer not null,
+    classical_genre_count integer not null,
+    piano_genre_count integer not null
+);
 
 create table music_catalog (
     id serial primary key,

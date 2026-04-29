@@ -2,15 +2,14 @@
   <div class="catalog-page">
     <header class="catalog-header">
       <h1 class="title">Music Catalog</h1>
-      <div class="catalog-session">
-        <span>Signed in as ${Username}</span>
-        <button class="button is-light" onclick="${SignOut}">Sign out</button>
-      </div>
     </header>
 
     <section class="catalog-search">
       <div class="field">
         <label class="label">Title</label>
+        <div class="control catalog-typeahead">
+          <input class="input" bind="${TitleSearch}" placeholder="Type title">
+        </div>
         <div class="control">
           <div class="select is-fullwidth">
             <select bind="${Title}">
@@ -22,6 +21,9 @@
 
       <div class="field">
         <label class="label">Artist</label>
+        <div class="control catalog-typeahead">
+          <input class="input" bind="${ArtistSearch}" placeholder="Type artist name">
+        </div>
         <div class="control">
           <div class="select is-fullwidth">
             <select bind="${Artist}">
@@ -57,10 +59,19 @@
         <label class="label">&nbsp;</label>
         <div class="buttons">
           <button class="button is-primary" onclick="${Search}">Search</button>
+          <button class="button is-light" onclick="${ClearFilters}">Clear Filters</button>
           <button class="button" onclick="${Reload}">Reload Source</button>
         </div>
+        <p class="catalog-last-reloaded">${LastReloaded}</p>
       </div>
     </section>
+
+    ${ResultCount}
+    <template id="ResultCount">
+      <div class="catalog-result-count">
+        ${Count} matches · Showing ${StartRow}-${EndRow} · Page ${PageNumber}
+      </div>
+    </template>
 
     <section class="catalog-grid">
       <table class="table is-fullwidth is-striped is-hoverable">
@@ -84,5 +95,45 @@
         </tbody>
       </table>
     </section>
+
+    <footer class="catalog-pager">
+      <button class="button is-small" onclick="${PreviousPage}">Previous</button>
+      <button class="button is-small" onclick="${NextPage}">Next</button>
+    </footer>
+
+    ${ReloadCompleteDialog}
+
+    <template id="ReloadCompleteDialog">
+      <div class="modal is-active">
+        <div class="modal-background" onclick="${Close}"></div>
+        <div class="modal-card">
+          <header class="modal-card-head">
+            <p class="modal-card-title">Load complete</p>
+            <button class="delete" aria-label="close" onclick="${Close}"></button>
+          </header>
+          <section class="modal-card-body">
+            <p>${RowCount} rows were loaded from the source file.</p>
+            <p class="reload-timestamp">Last reloaded: ${LastReloaded}</p>
+            <dl class="reload-diagnostics">
+              <div>
+                <dt>Unknown codec</dt>
+                <dd>${UnknownCodecCount}</dd>
+              </div>
+              <div>
+                <dt>Classical normalized</dt>
+                <dd>${ClassicalGenreCount}</dd>
+              </div>
+              <div>
+                <dt>Piano normalized</dt>
+                <dd>${PianoGenreCount}</dd>
+              </div>
+            </dl>
+          </section>
+          <footer class="modal-card-foot">
+            <button class="button is-primary" onclick="${Close}">OK</button>
+          </footer>
+        </div>
+      </div>
+    </template>
   </div>
 </template>

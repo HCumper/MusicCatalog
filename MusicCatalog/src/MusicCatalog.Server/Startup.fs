@@ -1,7 +1,6 @@
 module MusicCatalog.Server.Program
 
 open Microsoft.AspNetCore
-open Microsoft.AspNetCore.Authentication.Cookies
 open Microsoft.AspNetCore.Builder
 open Microsoft.AspNetCore.Hosting
 open Microsoft.Extensions.DependencyInjection
@@ -21,10 +20,6 @@ let main args =
         .AddInteractiveWebAssemblyComponents()
     |> ignore
     builder.Services.AddServerSideBlazor() |> ignore
-    builder.Services.AddAuthorization()
-        .AddAuthentication(CookieAuthenticationDefaults.AuthenticationScheme)
-        .AddCookie()
-    |> ignore
     builder.Services.AddBoleroRemoting<RecordingService>() |> ignore
     builder.Services.AddBoleroComponents() |> ignore
     #if DEBUG
@@ -39,10 +34,8 @@ let main args =
         app.UseWebAssemblyDebugging()
 
     app
-        .UseAuthentication()
         .UseStaticFiles()
         .UseRouting()
-        .UseAuthorization()
         .UseAntiforgery()
     |> ignore
 
