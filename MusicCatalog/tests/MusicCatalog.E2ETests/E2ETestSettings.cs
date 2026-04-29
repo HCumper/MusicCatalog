@@ -11,9 +11,9 @@ public sealed record E2ETestSettings(
     float SlowMoMilliseconds)
 {
     private static bool ReadHeadless() =>
-        string.Equals(
+        !string.Equals(
             Environment.GetEnvironmentVariable("MUSICCATALOG_E2E_HEADLESS"),
-            "true",
+            "false",
             StringComparison.OrdinalIgnoreCase);
 
     private static float ReadSlowMoMilliseconds() =>
@@ -21,7 +21,7 @@ public sealed record E2ETestSettings(
             Environment.GetEnvironmentVariable("MUSICCATALOG_E2E_SLOWMO"),
             out var slowMoMilliseconds)
             ? slowMoMilliseconds
-            : 250;
+            : 2500;
 
     public static E2ETestSettings Load() =>
         new(

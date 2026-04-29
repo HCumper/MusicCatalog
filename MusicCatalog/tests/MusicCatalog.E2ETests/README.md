@@ -33,13 +33,13 @@ $env:MUSICCATALOG_E2E_TITLE = "mozart"
 $env:MUSICCATALOG_E2E_ARTIST = "brendel"
 $env:MUSICCATALOG_E2E_GENRE = "Classical"
 $env:MUSICCATALOG_E2E_CODEC = "MP3"
-$env:MUSICCATALOG_E2E_HEADLESS = "true"
+$env:MUSICCATALOG_E2E_HEADLESS = "false"
 $env:MUSICCATALOG_E2E_SLOWMO = "100"
 ```
 
 If `MUSICCATALOG_E2E_CONNECTIONSTRING` is not set, the tests are skipped.
 
-The browser is visible by default. Set `MUSICCATALOG_E2E_HEADLESS=true` to hide it.
+The browser is hidden by default. Set `MUSICCATALOG_E2E_HEADLESS=false` to show it.
 Set `MUSICCATALOG_E2E_SLOWMO` to a larger number, such as `500`, to slow each browser action down while watching the tests.
 
 ## Covered Workflows
