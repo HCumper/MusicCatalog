@@ -73,6 +73,10 @@ let initModel =
       pageSize = 100
       error = None }
 
+// Avoid server typeahead queries until the user has entered enough text to narrow results.
+let private hasTypeaheadMinimum (value: string) =
+    value.Trim().Length >= 2
+
 /// Remote service definition.
 type RecordingService =
     {
@@ -154,16 +158,36 @@ let update remote message model =
         Cmd.ofMsg GetGenreOptions
 
     | SetTitleSearch value ->
-        { model with
-            titleSearch = value
-            titleFilter = "" },
-        Cmd.ofMsg (GetTitleOptions value)
+        let nextModel =
+            { model with
+                titleSearch = value
+                titleFilter = ""
+                titleOptions =
+                    if hasTypeaheadMinimum value then
+                        model.titleOptions
+                    else
+                        Array.empty }
+
+        if hasTypeaheadMinimum value then
+            nextModel, Cmd.ofMsg (GetTitleOptions value)
+        else
+            nextModel, Cmd.none
     | SetTitleFilter value -> { model with titleFilter = value }, Cmd.none
     | SetArtistSearch value ->
-        { model with
-            artistSearch = value
-            artistFilter = "" },
-        Cmd.ofMsg (GetArtistOptions value)
+        let nextModel =
+            { model with
+                artistSearch = value
+                artistFilter = ""
+                artistOptions =
+                    if hasTypeaheadMinimum value then
+                        model.artistOptions
+                    else
+                        Array.empty }
+
+        if hasTypeaheadMinimum value then
+            nextModel, Cmd.ofMsg (GetArtistOptions value)
+        else
+            nextModel, Cmd.none
     | SetArtistFilter value -> { model with artistFilter = value }, Cmd.none
     | SetGenreFilter value -> { model with genreFilter = value }, Cmd.none
     | SetCodecFilter value -> { model with codecFilter = value }, Cmd.none
@@ -192,8 +216,11 @@ let update remote message model =
     | RecvLastReloaded lastReloaded ->
         { model with lastReloaded = lastReloaded }, Cmd.none
     | GetArtistOptions search ->
-        model,
-        Cmd.OfAsync.either remote.getArtistOptions search RecvArtistOptions Error
+        if hasTypeaheadMinimum search then
+            model,
+            Cmd.OfAsync.either remote.getArtistOptions search RecvArtistOptions Error
+        else
+            { model with artistOptions = Array.empty }, Cmd.none
     | RecvArtistOptions artists ->
         let selectedArtist =
             if Array.contains model.artistFilter artists then
@@ -206,8 +233,11 @@ let update remote message model =
             artistFilter = selectedArtist },
         Cmd.none
     | GetTitleOptions search ->
-        model,
-        Cmd.OfAsync.either remote.getTitleOptions search RecvTitleOptions Error
+        if hasTypeaheadMinimum search then
+            model,
+            Cmd.OfAsync.either remote.getTitleOptions search RecvTitleOptions Error
+        else
+            { model with titleOptions = Array.empty }, Cmd.none
     | RecvTitleOptions titles ->
         let selectedTitle =
             if Array.contains model.titleFilter titles then

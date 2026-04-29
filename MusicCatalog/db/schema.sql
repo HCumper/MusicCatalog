@@ -1,6 +1,8 @@
 drop table if exists music_catalog;
 drop table if exists music_catalog_import_metadata;
 
+create extension if not exists pg_trgm;
+
 create table music_catalog_import_metadata (
     id integer primary key,
     reloaded_at timestamp with time zone not null,
@@ -38,3 +40,15 @@ create table music_catalog (
     mode text,
     tag text
 );
+
+create index if not exists ix_music_catalog_title_trgm
+    on music_catalog using gin (title gin_trgm_ops);
+
+create index if not exists ix_music_catalog_artist_trgm
+    on music_catalog using gin (artist gin_trgm_ops);
+
+create index if not exists ix_music_catalog_genre
+    on music_catalog (genre);
+
+create index if not exists ix_music_catalog_codec
+    on music_catalog (codec);

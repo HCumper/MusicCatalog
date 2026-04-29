@@ -98,6 +98,47 @@ module RecordingRepository =
     let private quoteIdentifier (identifier: string) =
         "\"" + identifier.Replace("\"", "\"\"") + "\""
 
+    // Create indexes that match the catalog's common filters and typeahead searches.
+    let private createSearchIndexes (conn: NpgsqlConnection) tx (columns: string array) =
+        task {
+            let hasColumn column =
+                columns
+                |> Array.exists (fun value ->
+                    String.Equals(value, column, StringComparison.OrdinalIgnoreCase))
+
+            let executeSql sql =
+                task {
+                    use cmd = new NpgsqlCommand(sql, conn, tx)
+                    let! _ = cmd.ExecuteNonQueryAsync()
+                    return ()
+                }
+
+            if hasColumn "title" || hasColumn "artist" then
+                do!
+                    executeSql
+                        "create extension if not exists pg_trgm"
+
+            if hasColumn "title" then
+                do!
+                    executeSql
+                        "create index if not exists ix_music_catalog_title_trgm on music_catalog using gin (title gin_trgm_ops)"
+
+            if hasColumn "artist" then
+                do!
+                    executeSql
+                        "create index if not exists ix_music_catalog_artist_trgm on music_catalog using gin (artist gin_trgm_ops)"
+
+            if hasColumn "genre" then
+                do!
+                    executeSql
+                        "create index if not exists ix_music_catalog_genre on music_catalog (genre)"
+
+            if hasColumn "codec" then
+                do!
+                    executeSql
+                        "create index if not exists ix_music_catalog_codec on music_catalog (codec)"
+        }
+
     // Project a table row to the expected column count.
     let private rowValues (columnCount: int) (cells: string array) =
         Array.init columnCount (cellValue cells)
@@ -402,6 +443,8 @@ module RecordingRepository =
                 let! _ = insertCmd.ExecuteNonQueryAsync()
                 ()
 
+            do! createSearchIndexes conn tx sourceTable.columns
+
             let reloadedAt = DateTime.UtcNow
 
             use createMetadataCmd =
@@ -593,135 +636,139 @@ module RecordingRepository =
         }
 
     // Load a capped list of artist values matching the current typeahead text.
-    let artistOptions connectionString search =
+    let artistOptions connectionString (search: string) =
         task {
             requireConnectionString connectionString
 
-            use conn = new NpgsqlConnection(connectionString)
-            do! conn.OpenAsync()
-
-            let tableExistsSql =
-                """
-                select exists (
-                    select 1
-                    from information_schema.tables
-                    where table_schema = 'public'
-                      and table_name = 'music_catalog'
-                )
-                """
-
-            use tableExistsCmd = new NpgsqlCommand(tableExistsSql, conn)
-            let! tableExists = tableExistsCmd.ExecuteScalarAsync()
-
-            if not (tableExists :?> bool) then
+            if search.Trim().Length < 2 then
                 return Array.empty
             else
-                let artistColumnExistsSql =
+                use conn = new NpgsqlConnection(connectionString)
+                do! conn.OpenAsync()
+
+                let tableExistsSql =
                     """
                     select exists (
                         select 1
-                        from information_schema.columns
+                        from information_schema.tables
                         where table_schema = 'public'
                           and table_name = 'music_catalog'
-                          and column_name = 'artist'
                     )
                     """
 
-                use artistColumnExistsCmd = new NpgsqlCommand(artistColumnExistsSql, conn)
-                let! artistColumnExists = artistColumnExistsCmd.ExecuteScalarAsync()
+                use tableExistsCmd = new NpgsqlCommand(tableExistsSql, conn)
+                let! tableExists = tableExistsCmd.ExecuteScalarAsync()
 
-                if not (artistColumnExists :?> bool) then
+                if not (tableExists :?> bool) then
                     return Array.empty
                 else
-                    use cmd =
-                        new NpgsqlCommand(
-                            """
-                            select distinct artist
-                            from music_catalog
-                            where artist is not null
-                              and btrim(artist) <> ''
-                              and (@search = '' or artist ilike @pattern)
-                            order by artist
-                            limit 100
-                            """,
-                            conn
+                    let artistColumnExistsSql =
+                        """
+                        select exists (
+                            select 1
+                            from information_schema.columns
+                            where table_schema = 'public'
+                              and table_name = 'music_catalog'
+                              and column_name = 'artist'
                         )
+                        """
 
-                    cmd.Parameters.AddWithValue("search", search) |> ignore
-                    cmd.Parameters.AddWithValue("pattern", "%" + search + "%") |> ignore
-                    use! reader = cmd.ExecuteReaderAsync()
-                    let artists = ResizeArray<string>()
+                    use artistColumnExistsCmd = new NpgsqlCommand(artistColumnExistsSql, conn)
+                    let! artistColumnExists = artistColumnExistsCmd.ExecuteScalarAsync()
 
-                    while! reader.ReadAsync() do
-                        artists.Add(reader.GetString(0))
+                    if not (artistColumnExists :?> bool) then
+                        return Array.empty
+                    else
+                        use cmd =
+                            new NpgsqlCommand(
+                                """
+                                select distinct artist
+                                from music_catalog
+                                where artist is not null
+                                  and btrim(artist) <> ''
+                                  and artist ilike @pattern
+                                order by artist
+                                limit 100
+                                """,
+                                conn
+                            )
 
-                    return artists.ToArray()
+                        cmd.Parameters.AddWithValue("pattern", "%" + search + "%") |> ignore
+                        use! reader = cmd.ExecuteReaderAsync()
+                        let artists = ResizeArray<string>()
+
+                        while! reader.ReadAsync() do
+                            artists.Add(reader.GetString(0))
+
+                        return artists.ToArray()
         }
 
     // Load a capped list of title values matching the current typeahead text.
-    let titleOptions connectionString search =
+    let titleOptions connectionString (search: string) =
         task {
             requireConnectionString connectionString
 
-            use conn = new NpgsqlConnection(connectionString)
-            do! conn.OpenAsync()
-
-            let tableExistsSql =
-                """
-                select exists (
-                    select 1
-                    from information_schema.tables
-                    where table_schema = 'public'
-                      and table_name = 'music_catalog'
-                )
-                """
-
-            use tableExistsCmd = new NpgsqlCommand(tableExistsSql, conn)
-            let! tableExists = tableExistsCmd.ExecuteScalarAsync()
-
-            if not (tableExists :?> bool) then
+            if search.Trim().Length < 2 then
                 return Array.empty
             else
-                let titleColumnExistsSql =
+                use conn = new NpgsqlConnection(connectionString)
+                do! conn.OpenAsync()
+
+                let tableExistsSql =
                     """
                     select exists (
                         select 1
-                        from information_schema.columns
+                        from information_schema.tables
                         where table_schema = 'public'
                           and table_name = 'music_catalog'
-                          and column_name = 'title'
                     )
                     """
 
-                use titleColumnExistsCmd = new NpgsqlCommand(titleColumnExistsSql, conn)
-                let! titleColumnExists = titleColumnExistsCmd.ExecuteScalarAsync()
+                use tableExistsCmd = new NpgsqlCommand(tableExistsSql, conn)
+                let! tableExists = tableExistsCmd.ExecuteScalarAsync()
 
-                if not (titleColumnExists :?> bool) then
+                if not (tableExists :?> bool) then
                     return Array.empty
                 else
-                    use cmd =
-                        new NpgsqlCommand(
-                            """
-                            select distinct title
-                            from music_catalog
-                            where title is not null
-                              and btrim(title) <> ''
-                              and (@search = '' or title ilike @pattern)
-                            order by title
-                            limit 100
-                            """,
-                            conn
+                    let titleColumnExistsSql =
+                        """
+                        select exists (
+                            select 1
+                            from information_schema.columns
+                            where table_schema = 'public'
+                              and table_name = 'music_catalog'
+                              and column_name = 'title'
                         )
+                        """
 
-                    cmd.Parameters.AddWithValue("search", search) |> ignore
-                    cmd.Parameters.AddWithValue("pattern", "%" + search + "%") |> ignore
-                    use! reader = cmd.ExecuteReaderAsync()
-                    let titles = ResizeArray<string>()
+                    use titleColumnExistsCmd = new NpgsqlCommand(titleColumnExistsSql, conn)
+                    let! titleColumnExists = titleColumnExistsCmd.ExecuteScalarAsync()
 
-                    while! reader.ReadAsync() do
-                        titles.Add(reader.GetString(0))
+                    if not (titleColumnExists :?> bool) then
+                        return Array.empty
+                    else
+                        use cmd =
+                            new NpgsqlCommand(
+                                """
+                                select distinct title
+                                from music_catalog
+                                where title is not null
+                                  and btrim(title) <> ''
+                                  and title ilike @pattern
+                                order by title
+                                limit 100
+                                """,
+                                conn
+                            )
 
-                    return titles.ToArray()
+                        cmd.Parameters.AddWithValue("pattern", "%" + search + "%") |> ignore
+                        use! reader = cmd.ExecuteReaderAsync()
+                        let titles = ResizeArray<string>()
+
+                        while! reader.ReadAsync() do
+                            titles.Add(reader.GetString(0))
+
+                        return titles.ToArray()
         }
 
     // Add one exact-match WHERE predicate when a dropdown criterion is selected.
