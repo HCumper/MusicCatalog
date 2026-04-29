@@ -49,9 +49,15 @@ http://localhost:5000
 
 ## Catalog Workflow
 
-1. Sign in with any username and password `password`.
-2. Open **Music Catalog**.
-3. Click **Reload Source** to load `mp3tag.html` into PostgreSQL.
-4. Use the dropdown criteria and click **Search** to populate the read-only grid.
+1. Open **Music Catalog**.
+2. Click **Reload Source** to load `mp3tag.html` into PostgreSQL.
+3. Use the dropdown criteria and click **Search** to populate the read-only grid.
 
 During import, codec and genre values are normalized for consistent filtering.
+
+## End-to-End Tests
+
+The solution includes an opt-in xUnit/Playwright test project at `MusicCatalog/tests/MusicCatalog.E2ETests`.
+It opens the real web UI, clicks Search, reads the visible grid, queries PostgreSQL directly, and compares the first page of rows plus the result count.
+
+Set `MUSICCATALOG_E2E_CONNECTIONSTRING` before running the E2E tests. Without it, the E2E test is skipped so normal builds do not require a local database or running server.

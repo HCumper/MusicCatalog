@@ -1,4 +1,5 @@
 <Solution>
   <Project Path="MusicCatalog/src/MusicCatalog.Client/MusicCatalog.Client.fsproj" />
   <Project Path="MusicCatalog/src/MusicCatalog.Server/MusicCatalog.Server.fsproj" />
+  <Project Path="MusicCatalog/tests/MusicCatalog.E2ETests/MusicCatalog.E2ETests.csproj" />
 </Solution>
