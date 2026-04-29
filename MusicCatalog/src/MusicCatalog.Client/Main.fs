@@ -1,6 +1,9 @@
 module MusicCatalog.Client.Main
 
+// Owns the client-side Elmish application: routing, UI state,
+// remoting calls, and template rendering for the music catalog.
 open System
+
 open Elmish
 open Bolero
 open Bolero.Html
@@ -42,6 +45,7 @@ and Recording =
       codec: string
       filename: string }
 
+// Provides temporary client-side rows used by the static title/artist filters.
 let sampleRecordings =
     [| { title = "- 2. Galop. Presto"
          artist = "Kathryn Stott - BBC Philharmonic"
@@ -68,6 +72,7 @@ let sampleRecordings =
          codec = "FLAC"
          filename = "Great Composers Love Folk Songs Too.flac" } |]
 
+// Build the initial application state before startup commands load server data.
 let initModel =
     { page = Home
       counter = 0
@@ -146,7 +151,9 @@ type Message =
     | Error of exn
     | ClearError
 
+// Apply Elmish messages to the model and start remote commands when needed.
 let update remote message model =
+    // After login, clear credentials but do not load catalog data until requested.
     let onSignIn =
         function
         | Some _ -> Cmd.ofMsg ClearLoginForm
@@ -249,11 +256,16 @@ let update remote message model =
 /// Connects the routing system to the Elmish application.
 let router = Router.infer SetPage (fun model -> model.page)
 
+// Bind the application shell template.
 type Main = Template<"wwwroot/main.html">
+
+// Bind the separate music catalog page template.
 type MusicCatalog = Template<"wwwroot/music-catalog.html">
 
+// Render the home page from the shell template.
 let homePage model dispatch = Main.Home().Elt()
 
+// Render the sample counter page from the starter app.
 let counterPage model dispatch =
     Main
         .Counter()
@@ -262,6 +274,7 @@ let counterPage model dispatch =
         .Value(model.counter, fun v -> dispatch (SetCounter v))
         .Elt()
 
+// Render an "All" option followed by selectable values for a dropdown.
 let optionList selected values =
     concat {
         option {
@@ -278,12 +291,14 @@ let optionList selected values =
             }
     }
 
+// Produce a sorted unique list from the sample rows.
 let distinctValues selector =
     sampleRecordings
     |> Array.map selector
     |> Array.distinct
     |> Array.sort
 
+// Render the searchable music catalog page and wire its controls to messages.
 let dataPage model (username: string) dispatch =
     MusicCatalog
         .MusicCatalog()
@@ -319,6 +334,7 @@ let dataPage model (username: string) dispatch =
         )
         .Elt()
 
+// Render the sign-in form and validation message.
 let signInPage model dispatch =
     Main
         .SignIn()
@@ -340,6 +356,7 @@ let signInPage model dispatch =
         )
         .Elt()
 
+// Render one left-navigation item with active-route styling.
 let menuItem (model: Model) (page: Page) (text: string) =
     Main
         .MenuItem()
@@ -348,6 +365,7 @@ let menuItem (model: Model) (page: Page) (text: string) =
         .Text(text)
         .Elt()
 
+// Render the shell around the current page and global error notification.
 let view model dispatch =
     Main()
         .SidebarCollapsed(if model.menuCollapsed then "is-collapsed" else "")
@@ -384,12 +402,14 @@ let view model dispatch =
         )
         .Elt()
 
+// Host the Elmish program inside the Bolero component lifecycle.
 type MyApp() =
     inherit ProgramComponent<Model, Message>()
 
     override _.CssScope = CssScopes.MyApp
 
     override this.Program =
+        // Create the remoting proxy and load user/options metadata at startup.
         let recordingService = this.Remote<RecordingService>()
         let update = update recordingService
 

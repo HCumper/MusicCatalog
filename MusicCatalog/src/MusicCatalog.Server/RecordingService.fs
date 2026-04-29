@@ -6,29 +6,36 @@ open System.Globalization
 open System.Net
 open System.Text
 open System.Text.RegularExpressions
+
 open Bolero
 open Bolero.Remoting
 open Bolero.Remoting.Server
 open Microsoft.AspNetCore.Hosting
 open Microsoft.Extensions.Configuration
-open MusicCatalog
 open Npgsql
 
+open MusicCatalog
+
+// Owns the server-side catalog workflow: import Mp3tag HTML into Postgres,
+// normalize source values, and query catalog data for Bolero remoting.
 module RecordingRepository =
     type SourceTable =
         { columns: string array
           rows: string array array }
 
+    // Fail early when database access is not configured for the server.
     let private requireConnectionString (connectionString: string) =
         if String.IsNullOrWhiteSpace connectionString then
             invalidOp "Connection string 'MusicCatalogDb' is missing."
 
+    // Read one table cell, treating missing trailing cells as blank values.
     let private cellValue (cells: string array) index =
         if index < cells.Length then
             cells[index].Trim()
         else
             ""
 
+    // Convert a source header into a safe PostgreSQL column identifier.
     let private sanitizeColumnName index (name: string) =
         let trimmed = name.Trim()
 
@@ -55,6 +62,7 @@ module RecordingRepository =
         else
             sanitized
 
+    // Ensure sanitized source headers remain unique after casing/punctuation cleanup.
     let private uniqueColumnNames (columns: string array) =
         let counts = Collections.Generic.Dictionary<string, int>()
 
@@ -70,12 +78,16 @@ module RecordingRepository =
                 counts[baseName] <- 1
                 baseName)
 
+    // Quote a PostgreSQL identifier for dynamically generated SQL.
     let private quoteIdentifier (identifier: string) =
         "\"" + identifier.Replace("\"", "\"\"") + "\""
 
+    // Project a table row to the expected column count.
     let private rowValues (columnCount: int) (cells: string array) =
         Array.init columnCount (cellValue cells)
 
+    // Mp3tag reports codec names in a detailed form; store the smaller
+    // catalog-facing names so filtering stays predictable.
     let private codecMappings =
         dict [
             "Advanced Systems Format", "ASF"
@@ -96,11 +108,13 @@ module RecordingRepository =
             "Windows Media Audio", "WMA"
         ]
 
+    // Convert a raw Mp3tag codec description to the catalog vocabulary.
     let private normalizeCodec (codec: string) =
         match codecMappings.TryGetValue(codec.Trim()) with
         | true, normalized -> normalized
         | false, _ -> "Unknown"
 
+    // Normalize the codec column in every imported row when that column exists.
     let private normalizeCodecColumn (columns: string array) (rows: string array array) =
         let codecIndex =
             columns
@@ -116,6 +130,8 @@ module RecordingRepository =
                 normalized[index] <- normalizeCodec normalized[index]
                 normalized)
 
+    // Normalize common translated/classified genre values before inserting.
+    // Piano wins over Classical when both terms appear in the source value.
     let private classicalGenreTerms =
         [| "Classical"
            "クラシック"
@@ -130,6 +146,7 @@ module RecordingRepository =
            "Klasik"
            "Classic" |]
 
+    // Collapse common classical/piano genre variants to the app's standard names.
     let private normalizeGenre (genre: string) =
         let containsPiano =
             genre.IndexOf("piano", StringComparison.OrdinalIgnoreCase) >= 0
@@ -146,6 +163,7 @@ module RecordingRepository =
         else
             genre
 
+    // Normalize the genre column in every imported row when that column exists.
     let private normalizeGenreColumn (columns: string array) (rows: string array array) =
         let genreIndex =
             columns
@@ -161,9 +179,13 @@ module RecordingRepository =
                 normalized[index] <- normalizeGenre normalized[index]
                 normalized)
 
+    // Format a genre value for display in dropdown options.
     let private displayGenre (genre: string) =
         CultureInfo.InvariantCulture.TextInfo.ToTitleCase(genre.Trim().ToLowerInvariant())
 
+    // The Mp3tag HTML export can contain tag text that is not strict XHTML.
+    // Read table fragments tolerantly instead of using XDocument.Load.
+    // Extract and decode text from matching HTML cells.
     let private htmlText pattern input =
         Regex.Matches(input, pattern, RegexOptions.IgnoreCase ||| RegexOptions.Singleline)
         |> Seq.cast<Match>
@@ -174,6 +196,7 @@ module RecordingRepository =
             |> fun value -> value.Trim())
         |> Seq.toArray
 
+    // Parse the Mp3tag export into sanitized columns and normalized row values.
     let readSourceFile (sourcePath: string) =
         let html = File.ReadAllText(sourcePath)
 
@@ -192,6 +215,7 @@ module RecordingRepository =
         if columns.Length = 0 then
             invalidOp $"No source columns were found in '{sourcePath}'."
 
+        // Source headers become database columns, so sanitize and de-duplicate them.
         let columnNames = uniqueColumnNames columns
 
         let sourceRows =
@@ -214,6 +238,7 @@ module RecordingRepository =
         { columns = columnNames
           rows = normalizedRows }
 
+    // Replace music_catalog with rows from the latest Mp3tag export.
     let reloadMusicCatalog connectionString sourcePath =
         task {
             requireConnectionString connectionString
@@ -225,6 +250,8 @@ module RecordingRepository =
             use conn = new NpgsqlConnection(connectionString)
             do! conn.OpenAsync()
 
+            // Rebuild from the export on each reload so the schema follows
+            // whatever columns are present in the latest Mp3tag file.
             use tx = conn.BeginTransaction()
 
             use dropCmd =
@@ -275,6 +302,7 @@ module RecordingRepository =
                         NpgsqlTypes.NpgsqlDbType.Text
                     ))
 
+            // Reuse the prepared command shape and swap parameter values per row.
             for row in sourceTable.rows do
                 for index, value in row |> Array.indexed do
                     parameters[index].Value <- value
@@ -288,6 +316,7 @@ module RecordingRepository =
             return Array.empty<Client.Main.Recording>
         }
 
+    // Load distinct genre values for the search dropdown.
     let genreOptions connectionString =
         task {
             requireConnectionString connectionString
@@ -345,6 +374,7 @@ module RecordingRepository =
                     while! reader.ReadAsync() do
                         genres.Add(reader.GetString(0))
 
+                    // Keep the musically important buckets first, then sort the rest.
                     let priority genre =
                         if String.Equals(genre, "Classical", StringComparison.OrdinalIgnoreCase) then
                             0
@@ -368,6 +398,7 @@ module RecordingRepository =
                         |> Seq.toArray
         }
 
+    // Add one exact-match WHERE predicate when a search criterion is selected.
     let private addOptionalFilter
         (filters: ResizeArray<string>)
         (cmd: NpgsqlCommand)
@@ -379,6 +410,7 @@ module RecordingRepository =
             filters.Add($"{quoteIdentifier column} = @{name}")
             cmd.Parameters.AddWithValue(name, value) |> ignore
 
+    // Query music_catalog using optional dropdown criteria and return grid rows.
     let searchRecordings connectionString title artist genre codec =
         task {
             requireConnectionString connectionString
@@ -390,6 +422,7 @@ module RecordingRepository =
             use cmd = new NpgsqlCommand()
             cmd.Connection <- conn
 
+            // Empty criteria mean "All"; selected criteria become exact matches.
             addOptionalFilter filters cmd "title" "title" title
             addOptionalFilter filters cmd "artist" "artist" artist
             addOptionalFilter filters cmd "genre" "genre" genre
@@ -447,6 +480,9 @@ type RecordingService
     let connectionString = config.GetConnectionString("MusicCatalogDb")
     let sourcePath = Path.Combine(env.ContentRootPath, "data", "mp3tag.html")
 
+    // Codec choices are configuration-driven because they are a fixed
+    // application vocabulary, unlike genres which come from the loaded catalog.
+    // Load configured codec options for the search dropdown.
     let codecOptions () =
         config.GetSection("MusicCatalog:CodecOptions").GetChildren()
         |> Seq.choose (fun item ->

@@ -17,4 +17,10 @@
         <PackageReference Include="Microsoft.AspNetCore.Components.WebAssembly.Server" Version="8.0.*"/>
         <PackageReference Include="Npgsql" Version="10.0.2" />
     </ItemGroup>
+    <ItemGroup>
+      <Folder Include="data\" />
+    </ItemGroup>
+    <ItemGroup>
+      <Content Remove="data\books.json" />
+    </ItemGroup>
 </Project>
