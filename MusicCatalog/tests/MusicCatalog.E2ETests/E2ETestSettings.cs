@@ -21,7 +21,7 @@ public sealed record E2ETestSettings(
             Environment.GetEnvironmentVariable("MUSICCATALOG_E2E_SLOWMO"),
             out var slowMoMilliseconds)
             ? slowMoMilliseconds
-            : 2500;
+            : 0;
 
     public static E2ETestSettings Load() =>
         new(

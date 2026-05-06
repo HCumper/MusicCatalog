@@ -126,9 +126,9 @@ type Message =
     | GetLastReloaded
     | RecvLastReloaded of string
     | GetArtistOptions of string
-    | RecvArtistOptions of string[]
+    | RecvArtistOptions of string * string[]
     | GetTitleOptions of string
-    | RecvTitleOptions of string[]
+    | RecvTitleOptions of string * string[]
     | SearchCatalog
     | StartSearch
     | PreviousPage
@@ -172,7 +172,16 @@ let update remote message model =
             nextModel, Cmd.ofMsg (GetTitleOptions value)
         else
             nextModel, Cmd.none
-    | SetTitleFilter value -> { model with titleFilter = value }, Cmd.none
+    | SetTitleFilter value ->
+        { model with
+            titleSearch = value
+            titleFilter = value
+            titleOptions =
+                if String.IsNullOrWhiteSpace value then
+                    Array.empty
+                else
+                    model.titleOptions },
+        Cmd.none
     | SetArtistSearch value ->
         let nextModel =
             { model with
@@ -188,7 +197,16 @@ let update remote message model =
             nextModel, Cmd.ofMsg (GetArtistOptions value)
         else
             nextModel, Cmd.none
-    | SetArtistFilter value -> { model with artistFilter = value }, Cmd.none
+    | SetArtistFilter value ->
+        { model with
+            artistSearch = value
+            artistFilter = value
+            artistOptions =
+                if String.IsNullOrWhiteSpace value then
+                    Array.empty
+                else
+                    model.artistOptions },
+        Cmd.none
     | SetGenreFilter value -> { model with genreFilter = value }, Cmd.none
     | SetCodecFilter value -> { model with codecFilter = value }, Cmd.none
     | GetCodecOptions ->
@@ -218,37 +236,43 @@ let update remote message model =
     | GetArtistOptions search ->
         if hasTypeaheadMinimum search then
             model,
-            Cmd.OfAsync.either remote.getArtistOptions search RecvArtistOptions Error
+            Cmd.OfAsync.either remote.getArtistOptions search (fun artists -> RecvArtistOptions(search, artists)) Error
         else
             { model with artistOptions = Array.empty }, Cmd.none
-    | RecvArtistOptions artists ->
-        let selectedArtist =
-            if Array.contains model.artistFilter artists then
-                model.artistFilter
-            else
-                ""
+    | RecvArtistOptions (search, artists) ->
+        if search <> model.artistSearch || not (hasTypeaheadMinimum model.artistSearch) then
+            model, Cmd.none
+        else
+            let selectedArtist =
+                if Array.contains model.artistFilter artists then
+                    model.artistFilter
+                else
+                    ""
 
-        { model with
-            artistOptions = artists
-            artistFilter = selectedArtist },
-        Cmd.none
+            { model with
+                artistOptions = artists
+                artistFilter = selectedArtist },
+            Cmd.none
     | GetTitleOptions search ->
         if hasTypeaheadMinimum search then
             model,
-            Cmd.OfAsync.either remote.getTitleOptions search RecvTitleOptions Error
+            Cmd.OfAsync.either remote.getTitleOptions search (fun titles -> RecvTitleOptions(search, titles)) Error
         else
             { model with titleOptions = Array.empty }, Cmd.none
-    | RecvTitleOptions titles ->
-        let selectedTitle =
-            if Array.contains model.titleFilter titles then
-                model.titleFilter
-            else
-                ""
+    | RecvTitleOptions (search, titles) ->
+        if search <> model.titleSearch || not (hasTypeaheadMinimum model.titleSearch) then
+            model, Cmd.none
+        else
+            let selectedTitle =
+                if Array.contains model.titleFilter titles then
+                    model.titleFilter
+                else
+                    ""
 
-        { model with
-            titleOptions = titles
-            titleFilter = selectedTitle },
-        Cmd.none
+            { model with
+                titleOptions = titles
+                titleFilter = selectedTitle },
+            Cmd.none
     | StartSearch ->
         { model with pageNumber = 1 }, Cmd.ofMsg SearchCatalog
     | SearchCatalog ->
@@ -272,7 +296,9 @@ let update remote message model =
             model.pageNumber,
             model.pageSize
 
-        { model with recordings = None },
+        { model with
+            recordings = None
+            lastSearchCount = None },
         Cmd.OfAsync.either remote.searchRecordings criteria GotRecordings Error
     | PreviousPage ->
         if model.pageNumber <= 1 then
@@ -291,8 +317,10 @@ let update remote message model =
         { model with
             titleSearch = ""
             titleFilter = ""
+            titleOptions = Array.empty
             artistSearch = ""
             artistFilter = ""
+            artistOptions = Array.empty
             genreFilter = ""
             codecFilter = ""
             pageNumber = 1

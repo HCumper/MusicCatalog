@@ -23,4 +23,8 @@
     <Using Include="Xunit" />
   </ItemGroup>
 
+  <ItemGroup>
+    <None Include="Fixtures\available-loads-reconstructed.html" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
 </Project>

@@ -16,6 +16,7 @@ public sealed class CatalogSearchTests
     {
         var settings = E2ETestSettings.Load();
         Skip.If(string.IsNullOrWhiteSpace(settings.ConnectionString), "Set MUSICCATALOG_E2E_CONNECTIONSTRING to run E2E database comparisons.");
+        await SkipIfCatalogUnavailable(settings);
 
         var expected = await LoadExpectedRows(settings, 0);
 
@@ -51,6 +52,7 @@ public sealed class CatalogSearchTests
     {
         var settings = E2ETestSettings.Load();
         Skip.If(string.IsNullOrWhiteSpace(settings.ConnectionString), "Set MUSICCATALOG_E2E_CONNECTIONSTRING to run E2E database comparisons.");
+        await SkipIfCatalogUnavailable(settings);
 
         var firstPage = await LoadExpectedRows(settings, 0);
         Skip.If(firstPage.TotalCount <= PageSize, "Paging test needs more than one page of matching rows.");
@@ -87,6 +89,7 @@ public sealed class CatalogSearchTests
     {
         var settings = E2ETestSettings.Load();
         Skip.If(string.IsNullOrWhiteSpace(settings.ConnectionString), "Set MUSICCATALOG_E2E_CONNECTIONSTRING to run E2E database comparisons.");
+        await SkipIfCatalogUnavailable(settings);
 
         var criteria = await LoadSampleCriteria(settings.ConnectionString);
 
@@ -128,6 +131,7 @@ public sealed class CatalogSearchTests
     {
         var settings = E2ETestSettings.Load();
         Skip.If(string.IsNullOrWhiteSpace(settings.ConnectionString), "Set MUSICCATALOG_E2E_CONNECTIONSTRING to run E2E database comparisons.");
+        await SkipIfCatalogUnavailable(settings);
 
         var criteria = await LoadSampleCriteria(settings.ConnectionString);
         Skip.If(criteria.Title.Length < 2 || criteria.Artist.Length < 2, "Typeahead test needs title and artist samples with at least two characters.");
@@ -163,6 +167,7 @@ public sealed class CatalogSearchTests
     {
         var settings = E2ETestSettings.Load();
         Skip.If(string.IsNullOrWhiteSpace(settings.ConnectionString), "Set MUSICCATALOG_E2E_CONNECTIONSTRING to run E2E database comparisons.");
+        await SkipIfCatalogUnavailable(settings);
 
         using var playwright = await Playwright.CreateAsync();
         var browser = await LaunchBrowser(playwright, settings);
@@ -200,6 +205,25 @@ public sealed class CatalogSearchTests
     {
         await page.GotoAsync(settings.BaseUrl, new PageGotoOptions { WaitUntil = WaitUntilState.NetworkIdle });
         await page.GetByRole(AriaRole.Heading, new PageGetByRoleOptions { Name = "Music Catalog" }).WaitForAsync();
+    }
+
+    private static async Task SkipIfCatalogUnavailable(E2ETestSettings settings)
+    {
+        try
+        {
+            using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(2) };
+            using var response = await client.GetAsync(settings.BaseUrl);
+
+            Assert.True(
+                response.IsSuccessStatusCode,
+                $"MusicCatalog server at {settings.BaseUrl} returned {(int)response.StatusCode} {response.ReasonPhrase}.");
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or UriFormatException)
+        {
+            Skip.If(
+                true,
+                $"Start the MusicCatalog server at {settings.BaseUrl} to run E2E browser/database comparisons.");
+        }
     }
 
     private static async Task<IBrowser> LaunchBrowser(IPlaywright playwright, E2ETestSettings settings)
@@ -381,7 +405,7 @@ public sealed class CatalogSearchTests
             return;
         }
 
-        filters.Add($"{column} = @{column}");
+        filters.Add($"lower(btrim({column})) = lower(btrim(@{column}))");
         command.Parameters.Add(new NpgsqlParameter(column, NpgsqlDbType.Text) { Value = value });
     }
 

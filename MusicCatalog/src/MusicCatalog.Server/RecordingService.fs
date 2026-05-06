@@ -771,7 +771,7 @@ module RecordingRepository =
                         return titles.ToArray()
         }
 
-    // Add one exact-match WHERE predicate when a dropdown criterion is selected.
+    // Match dropdown values exactly while tolerating display-casing and stray spaces.
     let private addOptionalExactFilter
         (filters: ResizeArray<string>)
         (cmd: NpgsqlCommand)
@@ -780,7 +780,7 @@ module RecordingRepository =
         (value: string)
         =
         if not (String.IsNullOrWhiteSpace value) then
-            filters.Add($"{quoteIdentifier column} = @{name}")
+            filters.Add($"lower(btrim({quoteIdentifier column})) = lower(btrim(@{name}))")
             cmd.Parameters.AddWithValue(name, value) |> ignore
 
     // Add one case-insensitive contains predicate when typed search text is provided.
